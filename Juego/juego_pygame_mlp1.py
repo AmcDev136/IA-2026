@@ -97,6 +97,15 @@ class Juego:
         self.gravedad = 1.0
         self.salto_vel = self.salto_vel_inicial
 
+        # --- Movimiento horizontal (máquina de estados) ---
+        # Preparado para MLP de 4 acciones: 0=quieto, 1=saltar, 2=adelante, 3=atrás
+        self.posicion_original_x: int = self.margin
+        self.moviendo_x: bool = False
+        self.direccion_movimiento: int = 0    # +1 adelante, -1 atrás, 0 quieto
+        self.desplazamiento_objetivo: int = 80
+        self.tiempo_inicio_movimiento: int = 0
+        self.duracion_movimiento_ms: int = 700  # ms totales del ciclo completo
+
         self.current_frame = 0
         self.frame_speed = 10
         self.frame_count = 0
@@ -122,6 +131,7 @@ class Juego:
         self.ground_y = self.h - ground_offset
 
         self.player_size = (int(32 * self.scale), int(48 * self.scale))
+        self.desplazamiento_objetivo = int(80 * self.scale)  # Amplitud del paso, escala con la resolución
         self.bullet_size = (int(16 * self.scale), int(16 * self.scale))
         self.ship_size = (int(64 * self.scale), int(64 * self.scale))
         self.fondo_speed = max(1, int(2 * self.scale))
@@ -138,7 +148,7 @@ class Juego:
         self._cargar_assets()
 
         if reset_positions or not hasattr(self, "jugador"):
-            self.jugador = pygame.Rect(self.margin, self.ground_y, self.player_size[0], self.player_size[1])
+            self.jugador = pygame.Rect(self.margin + self.desplazamiento_objetivo, self.ground_y, self.player_size[0], self.player_size[1])
             self.bala = pygame.Rect(
                 self.w - self.margin,
                 self.ground_y + int(10 * self.scale),
@@ -201,7 +211,7 @@ class Juego:
 
     # ----------------- estado juego / modelo -----------------
     def _reset_estado_juego(self) -> None:
-        self.jugador.x, self.jugador.y = self.margin, self.ground_y
+        self.jugador.x, self.jugador.y = self.margin + self.desplazamiento_objetivo, self.ground_y
         self.nave.x, self.nave.y = self.w - int(100 * self.scale), self.ground_y
         self.bala.x = self.w - self.margin
         self.bala.y = self.ground_y + int(10 * self.scale)
@@ -213,6 +223,11 @@ class Juego:
         self._decision_frame_counter = 0
         self.fondo_x1 = 0
         self.fondo_x2 = self.w
+        # Resetear movimiento horizontal
+        self.posicion_original_x = self.margin + self.desplazamiento_objetivo
+        self.moviendo_x = False
+        self.direccion_movimiento = 0
+        self.tiempo_inicio_movimiento = 0
 
     def _reset_modelo(self) -> None:
         self.modelo = None
@@ -332,6 +347,49 @@ class Juego:
                 self.salto = False
                 self.salto_vel = self.salto_vel_inicial
                 self.en_suelo = True
+
+    def iniciar_paso_horizontal(self, direccion: int) -> None:
+        """Inicia un paso lateral si no hay uno en curso.
+        direccion: +1 = adelante, -1 = atrás.
+        Ignorar nuevas pulsaciones hasta que termine el ciclo completo.
+        Preparado para ser llamado por el MLP (acción 2 o 3) en el futuro.
+        """
+        if self.moviendo_x:
+            return
+        self.moviendo_x = True
+        self.direccion_movimiento = direccion
+        self.tiempo_inicio_movimiento = pygame.time.get_ticks()
+
+    def manejar_movimiento_horizontal(self) -> None:
+        """Actualiza la posición X del jugador usando interpolación lineal.
+        Fase IDA (0 → mitad ms): avanza hasta desplazamiento_objetivo.
+        Fase VUELTA (mitad → duracion ms): regresa exactamente al origen.
+        Independiente del salto; ambos pueden coexistir sin conflicto.
+        """
+        if not self.moviendo_x:
+            return
+
+        ahora = pygame.time.get_ticks()
+        elapsed = ahora - self.tiempo_inicio_movimiento
+        mitad = self.duracion_movimiento_ms // 2  # 1000 ms por defecto
+
+        if elapsed < mitad:
+            # Fase IDA: t va de 0.0 a 1.0
+            t = elapsed / mitad
+            self.jugador.x = self.posicion_original_x + int(
+                self.direccion_movimiento * self.desplazamiento_objetivo * t
+            )
+        elif elapsed < self.duracion_movimiento_ms:
+            # Fase VUELTA: t va de 0.0 a 1.0 (retroceso)
+            t = (elapsed - mitad) / mitad
+            self.jugador.x = self.posicion_original_x + int(
+                self.direccion_movimiento * self.desplazamiento_objetivo * (1.0 - t)
+            )
+        else:
+            # Ciclo completado: volver al origen exacto y liberar el estado
+            self.jugador.x = self.posicion_original_x
+            self.moviendo_x = False
+            self.direccion_movimiento = 0
 
     # ----------------- datos / ML -----------------
     def registrar_decision_manual(self) -> None:
@@ -565,9 +623,15 @@ class Juego:
                         self.mostrar_menu()
                     elif e.key == pygame.K_f:
                         self._toggle_fullscreen()
-                    elif e.key == pygame.K_SPACE and (not self.modo_auto) and self.en_suelo:
+                    elif e.key in (pygame.K_SPACE, pygame.K_UP) and (not self.modo_auto) and self.en_suelo:
                         salto_frame = True
                         self.iniciar_salto()
+                    # Movimiento horizontal — solo en modo manual
+                    # (en modo AUTO será el MLP quien llame a iniciar_paso_horizontal)
+                    elif e.key == pygame.K_RIGHT and not self.modo_auto:
+                        self.iniciar_paso_horizontal(+1)
+                    elif e.key == pygame.K_LEFT and not self.modo_auto:
+                        self.iniciar_paso_horizontal(-1)
 
             if not self.corriendo:
                 break
@@ -582,6 +646,9 @@ class Juego:
 
             if self.salto:
                 self.manejar_salto()
+
+            # Actualizar movimiento horizontal (independiente del salto)
+            self.manejar_movimiento_horizontal()
 
             if not self.bala_disparada:
                 self.disparar_bala()
