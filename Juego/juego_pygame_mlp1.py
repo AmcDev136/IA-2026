@@ -377,13 +377,13 @@ class Juego:
         X_train = scaler.fit_transform(X_train)
         X_test = scaler.transform(X_test)
         clf = MLPClassifier(
-            hidden_layer_sizes=(3, 3),
+            hidden_layer_sizes=(3, 3), #Cantidad de capas ocultas con los números de neuronas (3, 3)
             activation="relu",
             solver="adam",
-            max_iter=300000,
+            max_iter=300000, # iteraciones
             random_state=42,
         )
-        clf.fit(X_train, y_train)
+        clf.fit(X_train, y_train) # Con esta estructura, se pasa los datos de entrenamiento, y el modelo empieza a entrenar
         acc = clf.score(X_test, y_test)
         self._reset_modelo()
         self.scaler = scaler
@@ -415,7 +415,7 @@ class Juego:
         Xs = self.scaler.transform(X)
         proba_salto = None
         if hasattr(self.modelo, "predict_proba"):
-            proba_salto = float(self.modelo.predict_proba(Xs)[0][1])
+            proba_salto = float(self.modelo.predict_proba(Xs)[0][1]) # Le pregunta al modelo que hace con los datos que tiene
             decision = proba_salto >= 0.5
         else:
             pred = int(self.modelo.predict(Xs)[0])

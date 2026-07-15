@@ -1,3 +1,5 @@
 .vscode/
 venv/
 Caras/
+pruebas_caras/
+Eigenface1.xml

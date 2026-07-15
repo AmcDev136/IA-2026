@@ -1,5 +1,10 @@
 import numpy as np
 import cv2 as cv
+import os
+
+output_folder = 'D:/Caras/Fer/'
+if not os.path.exists(output_folder):
+    os.makedirs(output_folder)
 
 rostro = cv.CascadeClassifier('haarcascade_frontalface_alt2.xml')
 cap = cv.VideoCapture(0)
@@ -15,8 +20,9 @@ while True:
     rostros = rostro.detectMultiScale(gray, 1.3, 5)
     for(x, y, w, h) in rostros:
         img = frame[y:y+h, x:x+w] # recorte del rostro
-        count = count + 1
-        name = 'D:/IA Verano 2026/Caras/Cara'+str(count)+'.jpg'
+        imgr = cv.resize(frame, (100, 100))
+        count += 1
+        name = output_folder+ 'CarFer' + str(count)+'.jpg'
         cv.imwrite(name, img)
 
         m1 = int(h/2)
@@ -29,7 +35,7 @@ while True:
     if img is not None:
         cv.imshow('cara', img)
     
-    k = cv.waitKey(1)
+    k = cv.waitKey(30)
     if k == 27:
         break
 
