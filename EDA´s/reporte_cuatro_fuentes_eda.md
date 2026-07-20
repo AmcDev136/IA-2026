@@ -51,22 +51,69 @@ En la misión 1 era identificar rangos de promedios y asistencias que lo separab
 2. **Tipo propuesto:** Predecir — justificación: La escuela quiere saber que calificacion final tendrá un alumno basandose en tareas, calificaciones de examenes y asistencia.
 
 3. **Define Y y al menos 4 X. Señala cuál parece más relacionada con Y según las pistas.**
-
+    - **Variable_Y:** ``calificaciofinal``
+    - **Variables X:**
+        + ``examen_1 (relacionada a Y):`` Correlaciono con ~0.85 con la **Y**, ya que se observa que los puntajes altos casi garantizan calificaiones fiales altas.
+        + ``examen_2``: Similar a la anterior, se correlaciona fuertemente.
+        + ``promedio_tareas``: Refleja constancia en el trabajo durante todo el semestre.
+        + ``asisteciapct``: Indica nivel de exposición del alumno al material de la clase/materia. 
 
 - Qué se gana/pierde si se convierte a aprobado/reprobado:
+    Se gana simplificar el problema, convirtiendose en una clasificacion binaria, es decir, sería más facil comunicar.
+    Se pierde presición y granularidad, se pierde la capacidad de distinguir un alumno sobresaliente y uno que apenas va a pasar (70 de calificacion), además de perder la capacidad de distinguir a un alumno con 59 a uno ue saca 20.
+
 - Outliers / errores de captura:
+    + **Outliers:** La mayoría de los alumnos estudia alrededor de 5 horas, pero hay unos pocos casos extremos (valores atípicos que reportan 20-25 horas) que "jalan" el promedio hacia arriba.
+    + **Errores de captura:** : Limitar los valores. Transformar cualquier valor > 100 a exactamente 100 (asumiendo que fue un alumno perfecto al que le sumaron puntos extra erróneamente).
+
 - Métricas (2):
+necesitamos métricas que evalúen la distancia entre la predicción y el valor real:
+    + **Error Absoluto Medio:** Mide el promedio de las diferencias absolutas entre lo predicho y lo real. Ejemplo: Un MAE de 5 significa que el modelo se equivoca, en promedio, por 5 puntos en la calificación final.
+
+    + **Raíz del Error Cuadrático Medio:** Mide los errores, pero penaliza más fuertemente los errores grandes (al elevar las diferencias al cuadrado antes de promediarlas).
+
 - Modelo propuesto:
+    + Si la gráfica de ``examen_1`` contra ``calificacion_final`` es una línea recta: El modelo ideal sería una Regresión Lineal Simple (o Múltiple si sumamos más variables), ya que asume una relación proporcional directa.
+
+    + **Si la gráfica tiene forma escalada:** La regresión lineal fallaría. El modelo simple ideal sería un Árbol de Decisión, el cual particiona los datos y hace predicciones por segmentos, creando visualmente ese efecto escalonado.
 
 ## Misión 4 — Tiempo de Estudio
-- Pregunta de negocio:
-- **Tipo propuesto:** [clasificar / predecir] — justificación:
-- Hipótesis dificultad → horas:
-- Cola larga: ¿borrar o conservar?
-- Alternativa de binarizar Y:
-- Métricas y modelo + 2 chequeos EDA:
+1. **Pregunta de negocio en una frase:** ¿cuántas horas adicionales necesita un alumno para dominar el tema?
+
+2. **Propón: ¿clasificar o predecir? Justifica con ``horas_adicionales``:**
+Predecir, la escuela quiere obtener un apróximado de horas adicionales para ue un alumno domine un tema, además, la variable ``horas_adicionales`` es de tipo númerico, por lo que clasificar por clases no bastaría.
+
+3. **Con la tabla por dificultad, formula una hipótesis EDA (“a mayor dificultad, …”):** A mayor dificultad del tema, el alumno ocupa más horas de estudio para alcanzar a dominar el tema, es decir, existe un crecimiento exponencial entre la dificultad del tema y las horas de estudio.
+
+4. **¿Cómo inspeccionarías en EDA las categóricas ``tema_dificultad`` y ``dispositivo``?** Revisar cuántos alumnos hay en cada grupo (cuántos en dificultad alta, media, baja, cuántos usan PC, móvil o tablet). Esto explicará si algún grupo es demasiado pequeño o dominante. Además, Calcular cuántas horas adicionales en promedio necesita cada grupo.
+
+5. **La cola > 40 h es solo 3%. ¿Borrar outliers o conservar casos reales? Argumenta antes de decidir.** Conservar los casos reales y comparar los casos específicos por los que se ocupan > 40, ajustar el tema para que sea menos 
+
+6. **Si ``pretest_score`` y ``ejercicios_correctos_pct`` van juntos, ¿redundancia? ¿Cómo lo checarías?** Si, es casi seguro que si hay redundancia, de manera visual, crearía un gráfico de dispersión poniendo el pretest en un eje y los ejercicios en el otro. Si los puntos dibujan casi una línea recta inclinada hacia arriba, significa que dicen exactamente lo mismo y si se quiere numericamente, Calcularía la correlación. Si el resultado es un número muy cercano a 1, se confirma la redundancia.
+
+7. **Alternativa: binarizar Y con umbral 15 h (“tutoría intensiva: sí/no”). ¿Cuándo tendría sentido y qué se pierde?** Tendría sentido solo si la escuela quisiera tomar una medida práctica, que se perdería?, Tratar exactamente a un alumno que necesita 16 horas a uno que necesita 35 horas, además de perder de vista a alumnos que aunque si necesiten de apoyo, reciban un "no".
+
+8. **Propón métricas según tu tipo (si predices número: MAE/RMSE/…; si clasificas: otras). Justifica.** 
+    + **MAE:** Es más fácil de interpretar para la escuela. Mide el promedio de equivocación. Si el MAE es de "3", significa que, en promedio, el modelo se equivoca por 3 horas al predecir el tiempo de estudio de un alumno.
+    * **RMSE:** Esta métrica castiga los errores muy grandes. Es perfecta para este caso porque equivocarse por 2 horas no es tan grave, pero predecir que un alumno necesita 5 horas cuando en realidad ocupaba 25 es un error gigante que el RMSE ayudará a detectar y penalizar.
+
+9. **Propuesta post-EDA: modelo + 2 chequeos EDA obligatorios antes de entrenar.** Modelo: Bosque aleatorio (Random forest regressor). <br>
+Chequeos EDA obligatorios:
+    + **Resolver la redundancia:** Confirmar que efectivamente se eliminó una de las columnas repetidas. Si se pasan al modelo, se generaría "ruido" matemático innecesario.
+    + **Convertir textos a números:** Asegurar que variables como ``dispositivo`` y ``tema_dificultad`` ya fueron transformadas a un formato numérico. Sería algo obligatorio para que el algoritmo funcione.
 
 ## Síntesis (máx. 8 líneas)
-1. Tabla resumen de *mis* cuatro propuestas de tipo (M1–M4).
-2. Una pista que usé para decidir “clase vs número” en cualquier misión.
-3. Frase final: “El tipo de problema se deduce de la pregunta y de Y porque…”
+1. **Tabla resumen de *mis* cuatro propuestas de tipo (M1–M4).**
+
+| Misión | Problemas propuestos (Y) |
+| --------- | --------- |
+| **M1: Semáforo** | Clasificación multiclase |
+| **M2: Alerta de Churn** | Clasificación binaria |
+| **M3: Puntaje Final** | Predicción / Regresión (Magnitud númerica cotinua) |
+| **M4: Tiempo de estudio** | Predicción / Regresión (Magnitud númerica cotinua) |
+
+2. **Una pista que usé para decidir “clase vs número” en cualquier misión.**
+Determinar si los datos de la variable objetivo representan una etiqueta finita (clase) o una escala medible (número).
+
+3. **Frase final: “El tipo de problema se deduce de la pregunta y de Y porque…”**
+El tipo de problema se deduce de la pregunta y de Y porque la naturaleza matemática del objetivo define si el algoritmo debe calcular una cantidad exacta o asignar una categoría estratégica.
