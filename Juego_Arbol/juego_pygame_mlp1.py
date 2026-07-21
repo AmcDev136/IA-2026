@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401, necesario para activar 3D en matplotlib
 
 # Activamos modo interactivo para que las ventanas no bloqueen el juego
-plt.ion()
+#plt.ion()
 
 
 # Ventana base y factor de escala
@@ -268,8 +268,7 @@ class Juego:
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
         # Mostrar sin bloquear (modo interactivo ya está activado con plt.ion())
-        plt.show(block=False)
-        plt.draw()  # Forzar actualización de la ventana
+        plt.show(block=True)
 
         return "Mostrando gráfica 2D interactiva (puedes rotar/zoom)."
 
@@ -300,8 +299,7 @@ class Juego:
         ax.set_title("Datos entrenamiento Árbol 3D (rojo=salto, azul=no salto)")
         plt.tight_layout()
         # Mostrar sin bloquear (modo interactivo ya está activado con plt.ion())
-        plt.show(block=False)
-        plt.draw()  # Forzar actualización de la ventana
+        plt.show(block=True)
 
         return "Mostrando gráfica 3D interactiva (puedes rotar/zoom)."
 
