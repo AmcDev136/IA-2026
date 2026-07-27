@@ -36,7 +36,8 @@ EXTRA_SCALE = 1.1
 class Sample:
     velocidad_bala: float
     distancia: float
-    salto: int  # 1 si saltó EN ESE FRAME, 0 si no
+    salto: int       # 1 si saltó EN ESE FRAME, 0 si no
+    movimiento: int  # 1 si se movió a la derecha EN ESE FRAME, 0 si no
 
 
 class Juego:
@@ -66,14 +67,19 @@ class Juego:
 
         # Datos / modelo
         self.datos_modelo: List[Sample] = []
+        # Modelo de salto
         self.modelo: Optional[MLPClassifier] = None
         self.scaler: Optional[StandardScaler] = None
+        # Modelo de movimiento horizontal
+        self.modelo_movimiento: Optional[MLPClassifier] = None
+        self.scaler_movimiento: Optional[StandardScaler] = None
         self.modelo_entrenado = False
-        # Caso especial: cuando solo hay una clase en los datos
-        # (0 = nunca salto, 1 = siempre salto).
+        # Casos especiales: cuando solo hay una clase en los datos
         self.clase_unica: Optional[int] = None
+        self.clase_unica_movimiento: Optional[int] = None
         # Debug / info del modelo en tiempo real
         self.ultima_proba_salto: Optional[float] = None
+        self.ultima_proba_movimiento: Optional[float] = None
 
         # Parámetros de decisión
         self.decision_window = 500
@@ -232,8 +238,11 @@ class Juego:
     def _reset_modelo(self) -> None:
         self.modelo = None
         self.scaler = None
+        self.modelo_movimiento = None
+        self.scaler_movimiento = None
         self.modelo_entrenado = False
         self.clase_unica = None
+        self.clase_unica_movimiento = None
 
     # ----------------- export / gráficas -----------------
 
@@ -251,9 +260,9 @@ class Juego:
         try:
             with open(ruta, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
-                writer.writerow(["velocidad_bala", "distancia", "salto"])
+                writer.writerow(["velocidad_bala", "distancia", "salto", "movimiento"])
                 for s in self.datos_modelo:
-                    writer.writerow([s.velocidad_bala, s.distancia, s.salto])
+                    writer.writerow([s.velocidad_bala, s.distancia, s.salto, s.movimiento])
         except Exception as e:
             return f"Error al guardar CSV: {e}"
 
@@ -405,11 +414,14 @@ class Juego:
         # Y marcamos salto = 1 DURANTE TODO EL TIEMPO QUE EL MUÑECO
         # ESTÁ EN EL AIRE (no en_suelo).
         salto_label = 0 if self.en_suelo else 1
+        # Marcamos movimiento = 1 si el jugador está actualmente moviéndose a la derecha.
+        movimiento_label = 1 if (self.moviendo_x and self.direccion_movimiento == 1) else 0
         self.datos_modelo.append(
             Sample(
                 velocidad_bala=float(self.velocidad_bala),
                 distancia=float(distancia),
                 salto=salto_label,
+                movimiento=movimiento_label,
             )
         )
 
@@ -417,37 +429,63 @@ class Juego:
         samples = list(self.datos_modelo)
         if len(samples) < 80:
             return False, "Necesitas más datos (>= 80). Juega en MANUAL."
+
         X = [[s.velocidad_bala, s.distancia] for s in samples]
-        y = [s.salto for s in samples]
-        clases = sorted(set(y))
-        # Si solo hay una clase, entrenamos un "modelo trivial"
-        # que siempre devuelve esa clase, en lugar de marcar error.
-        if len(clases) < 2:
-            self._reset_modelo()
-            self.clase_unica = int(clases[0])
-            self.modelo_entrenado = True
-            tipo = "SIEMPRE NO-SALTA (0)" if self.clase_unica == 0 else "SIEMPRE SALTA (1)"
-            return True, f"Modelo trivial entrenado: {tipo}. Junta datos de ambas clases para un modelo más fino."
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=42, stratify=y
-        )
-        scaler = StandardScaler()
-        X_train = scaler.fit_transform(X_train)
-        X_test = scaler.transform(X_test)
-        clf = MLPClassifier(
-            hidden_layer_sizes=(3, 3), #Cantidad de capas ocultas con los números de neuronas (3, 3)
-            activation="relu",
-            solver="adam",
-            max_iter=300000, # iteraciones
-            random_state=42,
-        )
-        clf.fit(X_train, y_train) # Con esta estructura, se pasa los datos de entrenamiento, y el modelo empieza a entrenar
-        acc = clf.score(X_test, y_test)
+        y_salto = [s.salto for s in samples]
+        y_mov   = [s.movimiento for s in samples]
+
         self._reset_modelo()
-        self.scaler = scaler
-        self.modelo = clf
+
+        # --- Modelo de SALTO ---
+        clases_s = sorted(set(y_salto))
+        if len(clases_s) < 2:
+            self.clase_unica = int(clases_s[0])
+            msg_s = "Salto: modelo trivial (SIEMPRE 1)" if self.clase_unica == 1 else "Salto: modelo trivial (SIEMPRE 0)"
+        else:
+            X_train, X_test, y_train, y_test = train_test_split(X, y_salto, test_size=0.2, random_state=42, stratify=y_salto)
+            scaler_s = StandardScaler()
+            X_train_s = scaler_s.fit_transform(X_train)
+            X_test_s  = scaler_s.transform(X_test)
+            clf_s = MLPClassifier(hidden_layer_sizes=(3, 3), activation="relu", solver="adam", max_iter=300000, random_state=42)
+            clf_s.fit(X_train_s, y_train)
+            acc_s = clf_s.score(X_test_s, y_test)
+            self.modelo = clf_s
+            self.scaler = scaler_s
+            msg_s = f"Salto: accuracy ≈ {acc_s:.3f}"
+
+        # --- Modelo de MOVIMIENTO horizontal ---
+        # Oversampling: cuando ambas acciones se entrenan juntas, los frames
+        # con movimiento=1 son minoría frente a movimiento=0 (frames de salto
+        # e inactivos). El MLP trivialmente predice siempre 0. Se replica
+        # la clase positiva hasta igualar la negativa para balancear.
+        n_pos_m = sum(1 for v in y_mov if v == 1)
+        n_neg_m = sum(1 for v in y_mov if v == 0)
+        if 0 < n_pos_m < n_neg_m:
+            idx_pos = [i for i, v in enumerate(y_mov) if v == 1]
+            repeticiones = (n_neg_m // n_pos_m) - 1  # cuántas veces más replicar
+            X_mov_bal  = list(X)  + [X[i]     for _ in range(repeticiones) for i in idx_pos]
+            y_mov_bal  = list(y_mov) + [1       for _ in range(repeticiones) for _ in idx_pos]
+        else:
+            X_mov_bal, y_mov_bal = X, y_mov
+
+        clases_m = sorted(set(y_mov_bal))
+        if len(clases_m) < 2:
+            self.clase_unica_movimiento = int(clases_m[0])
+            msg_m = "Movimiento: modelo trivial (SIEMPRE 1)" if self.clase_unica_movimiento == 1 else "Movimiento: modelo trivial (SIEMPRE 0)"
+        else:
+            X_train, X_test, y_train, y_test = train_test_split(X_mov_bal, y_mov_bal, test_size=0.2, random_state=42, stratify=y_mov_bal)
+            scaler_m = StandardScaler()
+            X_train_m = scaler_m.fit_transform(X_train)
+            X_test_m  = scaler_m.transform(X_test)
+            clf_m = MLPClassifier(hidden_layer_sizes=(3, 3), activation="relu", solver="adam", max_iter=300000, random_state=42)
+            clf_m.fit(X_train_m, y_train)
+            acc_m = clf_m.score(X_test_m, y_test)
+            self.modelo_movimiento = clf_m
+            self.scaler_movimiento = scaler_m
+            msg_m = f"Movimiento: accuracy ≈ {acc_m:.3f}"
+
         self.modelo_entrenado = True
-        return True, f"MLP entrenado. Accuracy test ≈ {acc:.3f}"
+        return True, f"MLP entrenado. {msg_s} | {msg_m}"
 
     def decision_auto_saltar(self) -> bool:
         if not self.modelo_entrenado:
@@ -455,9 +493,6 @@ class Juego:
         if (not self.bala_disparada) or (not self.en_suelo):
             return False
         distancia = abs(self.jugador.x - self.bala.x)
-        # En modo AUTO evaluamos desde que la bala sale,
-        # para que el modelo también aprenda a "no hacer nada"
-        # cuando la bala aún está lejos.
 
         # Caso especial: modelo trivial de una sola clase
         if self.clase_unica is not None and self.modelo is None:
@@ -471,16 +506,46 @@ class Juego:
 
         X = [[float(self.velocidad_bala), float(distancia)]]
         Xs = self.scaler.transform(X)
-        proba_salto = None
         if hasattr(self.modelo, "predict_proba"):
-            proba_salto = float(self.modelo.predict_proba(Xs)[0][1]) # Le pregunta al modelo que hace con los datos que tiene
+            proba_salto = float(self.modelo.predict_proba(Xs)[0][1])
             decision = proba_salto >= 0.5
         else:
             pred = int(self.modelo.predict(Xs)[0])
             proba_salto = 1.0 if pred == 1 else 0.0
             decision = pred == 1
-        # Guardamos la última probabilidad para mostrarla en pantalla.
         self.ultima_proba_salto = proba_salto
+        return decision
+
+    def decision_auto_mover(self) -> bool:
+        """Devuelve True si el modelo recomienda moverse a la derecha este frame."""
+        if not self.modelo_entrenado:
+            return False
+        if self.moviendo_x:
+            return False
+        if not self.bala_disparada:
+            return False
+        distancia = abs(self.jugador.x - self.bala.x)
+
+        # Caso especial: modelo trivial de una sola clase
+        if self.clase_unica_movimiento is not None and self.modelo_movimiento is None:
+            proba_mov = 1.0 if self.clase_unica_movimiento == 1 else 0.0
+            self.ultima_proba_movimiento = proba_mov
+            return self.clase_unica_movimiento == 1
+
+        # Caso normal: modelo MLP con scaler
+        if self.modelo_movimiento is None or self.scaler_movimiento is None:
+            return False
+
+        X = [[float(self.velocidad_bala), float(distancia)]]
+        Xs = self.scaler_movimiento.transform(X)
+        if hasattr(self.modelo_movimiento, "predict_proba"):
+            proba_mov = float(self.modelo_movimiento.predict_proba(Xs)[0][1])
+            decision = proba_mov >= 0.35  # Umbral más bajo: compensa desbalance residual de clases
+        else:
+            pred = int(self.modelo_movimiento.predict(Xs)[0])
+            proba_mov = 1.0 if pred == 1 else 0.0
+            decision = pred == 1
+        self.ultima_proba_movimiento = proba_mov
         return decision
 
     # ----------------- menú -----------------
@@ -595,12 +660,19 @@ class Juego:
             self._reset_estado_juego()
 
         # Info del modelo en tiempo real (solo si hay modelo entrenado)
-        if self.modelo_entrenado and self.modo_auto and self.ultima_proba_salto is not None:
-            txt = self.fuente_chica.render(
-                f"proba_salto≈{self.ultima_proba_salto:.2f}", True, self.AMARILLO
-            )
-            # Esquina superior izquierda, con un pequeño margen.
-            self.pantalla.blit(txt, (10, 10))
+        if self.modelo_entrenado and self.modo_auto:
+            y_hud = 10
+            if self.ultima_proba_salto is not None:
+                txt = self.fuente_chica.render(
+                    f"proba_salto≈{self.ultima_proba_salto:.2f}", True, self.AMARILLO
+                )
+                self.pantalla.blit(txt, (10, y_hud))
+                y_hud += self.fuente_chica.get_linesize() + 2
+            if self.ultima_proba_movimiento is not None:
+                txt2 = self.fuente_chica.render(
+                    f"proba_mover≈{self.ultima_proba_movimiento:.2f}", True, (120, 220, 255)
+                )
+                self.pantalla.blit(txt2, (10, y_hud))
 
     def loop(self) -> None:
         reloj = pygame.time.Clock()
@@ -630,8 +702,6 @@ class Juego:
                     # (en modo AUTO será el MLP quien llame a iniciar_paso_horizontal)
                     elif e.key == pygame.K_RIGHT and not self.modo_auto:
                         self.iniciar_paso_horizontal(+1)
-                    elif e.key == pygame.K_LEFT and not self.modo_auto:
-                        self.iniciar_paso_horizontal(-1)
 
             if not self.corriendo:
                 break
@@ -639,6 +709,9 @@ class Juego:
             if self.modo_auto:
                 if self.decision_auto_saltar():
                     self.iniciar_salto()
+                # Decisión independiente de movimiento horizontal
+                if self.decision_auto_mover():
+                    self.iniciar_paso_horizontal(+1)
             else:
                 # En modo manual registramos SIEMPRE la decisión de este frame.
                 # Ahora la etiqueta salto=1 cubre TODO el tiempo en el aire.
