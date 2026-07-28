@@ -38,6 +38,8 @@ class Sample:
     distancia: float
     salto: int       # 1 si saltó EN ESE FRAME, 0 si no
     movimiento: int  # 1 si se movió a la derecha EN ESE FRAME, 0 si no
+    dist_bala2_y: float  # distancia vertical bala2 → jugador (cuanto le falta para caer sobre él)
+    dist_bala2_x: float  # distancia horizontal bala2 ↔ jugador (0 = directamente encima)
 
 
 class Juego:
@@ -119,6 +121,9 @@ class Juego:
         # Velocidad base de la bala (en píxeles/frame, negativa porque va de der→izq)
         self.velocidad_bala = -12
         self.bala_disparada = False
+        self.bala2_disparada = False    # Bala de la segunda nave (cae vertical)
+        self.velocidad_bala2 = 6        # Velocidad constante hacia abajo (px/frame)
+        self.bala2_cooldown = 60        # Frames de espera antes del primer disparo vertical
         self.fondo_x1 = 0
         self.fondo_x2 = start_w
 
@@ -167,6 +172,19 @@ class Juego:
                 self.ship_size[0],
                 self.ship_size[1],
             )
+            # Segunda nave: sobre el área del jugador, dispara verticalmente hacia abajo
+            self.nave2 = pygame.Rect(
+                self.margin + self.desplazamiento_objetivo,
+                int(30 * self.scale),
+                self.ship_size[0],
+                self.ship_size[1],
+            )
+            self.bala2 = pygame.Rect(
+                self.nave2.x + self.ship_size[0] // 2 - self.bullet_size[0] // 2,
+                self.nave2.y + self.ship_size[1],
+                self.bullet_size[0],
+                self.bullet_size[1],
+            )
 
     def _cargar_assets(self) -> None:
         def safe_load(path: str, size: Tuple[int, int], fallback_color=(200, 200, 200, 255)) -> pygame.Surface:
@@ -199,6 +217,18 @@ class Juego:
             os.path.join(base, "assets/game/ufo.png"),
             self.ship_size,
             (140, 255, 200, 255),
+        )
+        # Segunda nave: mismo sprite, fallback naranja para distinguirla
+        self.nave2_img = safe_load(
+            os.path.join(base, "assets/game/ufo.png"),
+            self.ship_size,
+            (255, 140, 60, 255),
+        )
+        # Bala vertical: mismo sprite, fallback rojo
+        self.bala2_img = safe_load(
+            os.path.join(base, "assets/sprites/purple_ball.png"),
+            self.bullet_size,
+            (255, 80, 80, 255),
         )
 
     def _toggle_fullscreen(self) -> None:
@@ -234,6 +264,11 @@ class Juego:
         self.moviendo_x = False
         self.direccion_movimiento = 0
         self.tiempo_inicio_movimiento = 0
+        # Resetear bala2 (vertical)
+        self.bala2.x = self.nave2.x + self.ship_size[0] // 2 - self.bullet_size[0] // 2
+        self.bala2.y = self.nave2.y + self.ship_size[1]
+        self.bala2_disparada = False
+        self.bala2_cooldown = 60
 
     def _reset_modelo(self) -> None:
         self.modelo = None
@@ -260,9 +295,9 @@ class Juego:
         try:
             with open(ruta, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
-                writer.writerow(["velocidad_bala", "distancia", "salto", "movimiento"])
+                writer.writerow(["velocidad_bala", "distancia", "salto", "movimiento", "dist_bala2_y", "dist_bala2_x"])
                 for s in self.datos_modelo:
-                    writer.writerow([s.velocidad_bala, s.distancia, s.salto, s.movimiento])
+                    writer.writerow([s.velocidad_bala, s.distancia, s.salto, s.movimiento, s.dist_bala2_y, s.dist_bala2_x])
         except Exception as e:
             return f"Error al guardar CSV: {e}"
 
@@ -342,6 +377,19 @@ class Juego:
         self.bala.x = self.w - self.margin
         self.bala_disparada = False
 
+    def disparar_bala2(self) -> None:
+        # Dispara la bala vertical desde la segunda nave cuando el cooldown ha terminado
+        if not self.bala2_disparada and self.bala2_cooldown <= 0:
+            self.velocidad_bala2 = int(random.randint(5, 8) * self.scale)
+            self.bala2_disparada = True
+
+    def reset_bala2(self) -> None:
+        # Regresa bala2 a la posición inicial (bajo nave2) e inicia el cooldown aleatorio
+        self.bala2.x = self.nave2.x + self.ship_size[0] // 2 - self.bullet_size[0] // 2
+        self.bala2.y = self.nave2.y + self.ship_size[1]
+        self.bala2_disparada = False
+        self.bala2_cooldown = random.randint(45, 90)  # 1–2 s de pausa entre disparos (45 fps)
+
     def iniciar_salto(self) -> None:
         if self.en_suelo:
             self.salto = True
@@ -402,19 +450,16 @@ class Juego:
 
     # ----------------- datos / ML -----------------
     def registrar_decision_manual(self) -> None:
-        # IMPORTANTE: aquí NO debemos filtrar por en_suelo.
-        # En el mismo frame en que pulsas ESPACIO se llama a iniciar_salto(),
-        # que pone en_suelo = False antes de registrar, y se perdería ese frame.
-        # Solo comprobamos que la bala esté disparada.
-        if not self.bala_disparada:
+        # Registramos cuando hay al menos UNA bala activa (horizontal o vertical).
+        # Así el modelo aprende a reaccionar a cualquiera de las dos amenazas.
+        if not self.bala_disparada and not self.bala2_disparada:
             return
-        distancia = abs(self.jugador.x - self.bala.x)
-        # Entrenamos para que el modelo imite TU estilo:
-        # registramos desde que la bala sale, en cada frame relevante.
-        # Y marcamos salto = 1 DURANTE TODO EL TIEMPO QUE EL MUÑECO
-        # ESTÁ EN EL AIRE (no en_suelo).
+        distancia    = abs(self.jugador.x - self.bala.x)
+        dist_bala2_y = float(self.jugador.y - self.bala2.y)  # positivo: bala2 está arriba del jugador
+        dist_bala2_x = float(abs(self.jugador.x - self.bala2.x))  # 0 = directamente encima
+        # salto=1 durante TODO el tiempo que el muñeco está en el aire.
         salto_label = 0 if self.en_suelo else 1
-        # Marcamos movimiento = 1 si el jugador está actualmente moviéndose a la derecha.
+        # movimiento=1 si el jugador está actualmente moviéndose a la derecha.
         movimiento_label = 1 if (self.moviendo_x and self.direccion_movimiento == 1) else 0
         self.datos_modelo.append(
             Sample(
@@ -422,6 +467,8 @@ class Juego:
                 distancia=float(distancia),
                 salto=salto_label,
                 movimiento=movimiento_label,
+                dist_bala2_y=dist_bala2_y,
+                dist_bala2_x=dist_bala2_x,
             )
         )
 
@@ -430,8 +477,12 @@ class Juego:
         if len(samples) < 80:
             return False, "Necesitas más datos (>= 80). Juega en MANUAL."
 
-        X = [[s.velocidad_bala, s.distancia] for s in samples]
-        y_salto = [s.salto for s in samples]
+        # Vectores de features separados por amenaza:
+        # - Modelo salto:     solo features de bala horizontal
+        # - Modelo movimiento: solo features de bala vertical
+        X_salto = [[s.velocidad_bala, s.distancia]           for s in samples]
+        X_mov   = [[s.dist_bala2_y,   s.dist_bala2_x]       for s in samples]
+        y_salto = [s.salto      for s in samples]
         y_mov   = [s.movimiento for s in samples]
 
         self._reset_modelo()
@@ -442,7 +493,7 @@ class Juego:
             self.clase_unica = int(clases_s[0])
             msg_s = "Salto: modelo trivial (SIEMPRE 1)" if self.clase_unica == 1 else "Salto: modelo trivial (SIEMPRE 0)"
         else:
-            X_train, X_test, y_train, y_test = train_test_split(X, y_salto, test_size=0.2, random_state=42, stratify=y_salto)
+            X_train, X_test, y_train, y_test = train_test_split(X_salto, y_salto, test_size=0.2, random_state=42, stratify=y_salto)
             scaler_s = StandardScaler()
             X_train_s = scaler_s.fit_transform(X_train)
             X_test_s  = scaler_s.transform(X_test)
@@ -462,11 +513,11 @@ class Juego:
         n_neg_m = sum(1 for v in y_mov if v == 0)
         if 0 < n_pos_m < n_neg_m:
             idx_pos = [i for i, v in enumerate(y_mov) if v == 1]
-            repeticiones = (n_neg_m // n_pos_m) - 1  # cuántas veces más replicar
-            X_mov_bal  = list(X)  + [X[i]     for _ in range(repeticiones) for i in idx_pos]
-            y_mov_bal  = list(y_mov) + [1       for _ in range(repeticiones) for _ in idx_pos]
+            repeticiones = (n_neg_m // n_pos_m) - 1 # Cuantas veces más por replicar
+            X_mov_bal  = list(X_mov)   + [X_mov[i]  for _ in range(repeticiones) for i in idx_pos]
+            y_mov_bal  = list(y_mov)   + [1          for _ in range(repeticiones) for _ in idx_pos]
         else:
-            X_mov_bal, y_mov_bal = X, y_mov
+            X_mov_bal, y_mov_bal = X_mov, y_mov
 
         clases_m = sorted(set(y_mov_bal))
         if len(clases_m) < 2:
@@ -500,7 +551,7 @@ class Juego:
             self.ultima_proba_salto = proba_salto
             return self.clase_unica == 1
 
-        # Caso normal: modelo MLP con scaler
+        # Caso normal: modelo MLP con scaler (solo features de bala horizontal)
         if self.modelo is None or self.scaler is None:
             return False
 
@@ -522,9 +573,11 @@ class Juego:
             return False
         if self.moviendo_x:
             return False
-        if not self.bala_disparada:
+        # El movimiento esquiva la bala vertical: solo evaluar cuando bala2 está en vuelo
+        if not self.bala2_disparada:
             return False
-        distancia = abs(self.jugador.x - self.bala.x)
+        dist_bala2_y = float(self.jugador.y - self.bala2.y)
+        dist_bala2_x = float(abs(self.jugador.x - self.bala2.x))
 
         # Caso especial: modelo trivial de una sola clase
         if self.clase_unica_movimiento is not None and self.modelo_movimiento is None:
@@ -532,11 +585,11 @@ class Juego:
             self.ultima_proba_movimiento = proba_mov
             return self.clase_unica_movimiento == 1
 
-        # Caso normal: modelo MLP con scaler
+        # Caso normal: modelo MLP con scaler (solo features de bala vertical)
         if self.modelo_movimiento is None or self.scaler_movimiento is None:
             return False
 
-        X = [[float(self.velocidad_bala), float(distancia)]]
+        X = [[dist_bala2_y, dist_bala2_x]]
         Xs = self.scaler_movimiento.transform(X)
         if hasattr(self.modelo_movimiento, "predict_proba"):
             proba_mov = float(self.modelo_movimiento.predict_proba(Xs)[0][1])
@@ -646,17 +699,24 @@ class Juego:
 
         self.pantalla.blit(self.jugador_frames[self.current_frame], (self.jugador.x, self.jugador.y))
         self.pantalla.blit(self.nave_img, (self.nave.x, self.nave.y))
+        self.pantalla.blit(self.nave2_img, (self.nave2.x, self.nave2.y))
 
+        # Bala horizontal de nave 1
         if self.bala_disparada:
             self.bala.x += self.velocidad_bala
         if self.bala.x < -self.bullet_size[0]:
             self.reset_bala()
         self.pantalla.blit(self.bala_img, (self.bala.x, self.bala.y))
 
-        # Si hay colisión, solo reiniciamos el estado del juego
-        # pero NO volvemos al menú para evitar el efecto de
-        # "se cierra y se abre" constantemente.
-        if self.jugador.colliderect(self.bala):
+        # Bala vertical de nave 2: velocidad constante
+        if self.bala2_disparada:
+            self.bala2.y += self.velocidad_bala2  # Cae a velocidad fija
+        if self.bala2.y >= self.ground_y + self.bullet_size[1]:  # Llegó al suelo
+            self.reset_bala2()
+        self.pantalla.blit(self.bala2_img, (self.bala2.x, self.bala2.y))
+
+        # --- Colisiones ---
+        if self.jugador.colliderect(self.bala) or self.jugador.colliderect(self.bala2):
             self._reset_estado_juego()
 
         # Info del modelo en tiempo real (solo si hay modelo entrenado)
@@ -725,6 +785,12 @@ class Juego:
 
             if not self.bala_disparada:
                 self.disparar_bala()
+
+            # Bala2 vertical: contar cooldown y disparar cuando esté listo
+            if self.bala2_cooldown > 0:
+                self.bala2_cooldown -= 1
+            if not self.bala2_disparada:
+                self.disparar_bala2()
 
             self._update_frame()
             pygame.display.flip()
