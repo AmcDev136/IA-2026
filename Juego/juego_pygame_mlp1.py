@@ -124,6 +124,7 @@ class Juego:
         self.bala2_disparada = False    # Bala de la segunda nave (cae vertical)
         self.velocidad_bala2 = 6        # Velocidad constante hacia abajo (px/frame)
         self.bala2_cooldown = 60        # Frames de espera antes del primer disparo vertical
+        self.turno_bala: int = 1        # 1=turno bala horizontal, 2=turno bala vertical
         self.fondo_x1 = 0
         self.fondo_x2 = start_w
 
@@ -252,7 +253,6 @@ class Juego:
         self.bala.x = self.w - self.margin
         self.bala.y = self.ground_y + int(10 * self.scale)
         self.bala_disparada = False
-        self.bala_disparada = 0 # Iniciar cooldown
         self.velocidad_bala = int(-10 * self.scale)
         self.salto = False
         self.en_suelo = True
@@ -270,6 +270,7 @@ class Juego:
         self.bala2.y = self.nave2.y + self.ship_size[1]
         self.bala2_disparada = False
         self.bala2_cooldown = 60
+        self.turno_bala = 1             # Siempre empieza con el turno de bala horizontal
 
     def _reset_modelo(self) -> None:
         self.modelo = None
@@ -280,7 +281,81 @@ class Juego:
         self.clase_unica = None
         self.clase_unica_movimiento = None
 
-    # ----------------- export / gráficas -----------------
+    # ----------------- helpers de submodelo ML -----------------
+
+    def _entrenar_submodelo(
+        self,
+        X: list,
+        y: list,
+        nombre: str,
+        balancear: bool = False,
+    ) -> Tuple[Optional[MLPClassifier], Optional[StandardScaler], Optional[int], str]:
+        """Entrena un MLPClassifier para una etiqueta binaria.
+        Parametros:
+        balancear=True aplica oversampling de la clase positiva para
+        corregir desbalance (util para el submodelo de movimiento).
+        Retorna: (modelo, scaler, clase_unica, mensaje)
+        """
+        # Oversampling opcional: replica los positivos hasta igualar negativos
+        if balancear:
+            n_pos = sum(1 for v in y if v == 1)
+            n_neg = sum(1 for v in y if v == 0)
+            if 0 < n_pos < n_neg:
+                idx_pos = [i for i, v in enumerate(y) if v == 1]
+                repeticiones = (n_neg // n_pos) - 1
+                X = list(X) + [X[i] for _ in range(repeticiones) for i in idx_pos]
+                y = list(y) + [1    for _ in range(repeticiones) for _ in idx_pos]
+
+        clases = sorted(set(y))
+        if len(clases) < 2:
+            clase_unica = int(clases[0])
+            tipo = "SIEMPRE 1" if clase_unica == 1 else "SIEMPRE 0"
+            return None, None, clase_unica, f"{nombre}: modelo trivial ({tipo})"
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=y
+        )
+        scaler = StandardScaler()
+        X_train_s = scaler.fit_transform(X_train)
+        X_test_s  = scaler.transform(X_test)
+        clf = MLPClassifier(
+            hidden_layer_sizes=(3, 3),
+            activation="relu",
+            solver="adam",
+            max_iter=300000,
+            random_state=42,
+        )
+        clf.fit(X_train_s, y_train)
+        acc = clf.score(X_test_s, y_test)
+        return clf, scaler, None, f"{nombre}: accuracy \u2248 {acc:.3f}"
+
+    def _predecir_proba(
+        self,
+        modelo: Optional[MLPClassifier],
+        scaler: Optional[StandardScaler],
+        clase_unica: Optional[int],
+        X_raw: list,
+        umbral: float = 0.5,
+    ) -> Tuple[float, bool]:
+        """Realiza una prediccion con el submodelo dado.
+        Maneja el caso trivial (una sola clase) y el caso normal (MLP entrenado).
+        Retorna: (probabilidad_clase_1, decision_bool)
+        """
+        # Caso trivial: modelo de una sola clase
+        if clase_unica is not None and modelo is None:
+            proba = 1.0 if clase_unica == 1 else 0.0
+            return proba, clase_unica == 1
+        # Sin modelo disponible
+        if modelo is None or scaler is None:
+            return 0.0, False
+        Xs = scaler.transform(X_raw)
+        if hasattr(modelo, "predict_proba"):
+            proba = float(modelo.predict_proba(Xs)[0][1])
+            return proba, proba >= umbral
+        pred = int(modelo.predict(Xs)[0])
+        return (1.0 if pred == 1 else 0.0), pred == 1
+
+    # ----------------- export / graficas -----------------
 
     def exportar_datos_csv(self) -> str:
         """
@@ -369,8 +444,10 @@ class Juego:
 
     # ----------------- bala / salto -----------------
     def disparar_bala(self) -> None:
-        if not self.bala_disparada and self.bala2_cooldown <= 0:
-            # Si la bala vertical (bala2) ya va cayendo a mitad de pantalla, nos esperamos
+        # En el sistema de turnos, bala1 dispara sin esperar el cooldown de bala2.
+        # Solo esperamos si bala2 ya esta cayendo a mitad de pantalla (coordinacion visual).
+        if not self.bala_disparada:
+            # Si bala2 va cayendo y ya paso la mitad de la pantalla, esperamos
             if self.bala2_disparada and self.bala2.y > self.h // 3:
                 return
 
@@ -381,7 +458,7 @@ class Juego:
     def reset_bala(self) -> None:
         self.bala.x = self.w - self.margin
         self.bala_disparada = False
-        self.bala2_cooldown = random.randint(30, 60) # Espera entre 0.6 y 1.3 seg
+        # Nota: NO tocamos bala2_cooldown aqui; el sistema de turnos lo gestiona.
 
     def disparar_bala2(self) -> None:
         # Dispara la bala vertical desde la segunda nave cuando el cooldown ha terminado
@@ -484,132 +561,75 @@ class Juego:
         )
 
     def entrenar_modelo(self) -> Tuple[bool, str]:
+        """Entrena dos submodelos independientes siguiendo el estilo del jugador:
+        - Submodelo 1 (SALTO):      aprende cuando saltar para esquivar bala horizontal.
+        - Submodelo 2 (MOVIMIENTO): aprende cuando moverse para esquivar bala vertical.
+        Ambos modelos imitan fielmente las decisiones del jugador en modo manual.
+        """
         samples = list(self.datos_modelo)
         if len(samples) < 80:
-            return False, "Necesitas más datos (>= 80). Juega en MANUAL."
+            return False, "Necesitas mas datos (>= 80). Juega en MANUAL."
 
-        # Vectores de features separados por amenaza:
-        # - Modelo salto:     solo features de bala horizontal
-        # - Modelo movimiento: solo features de bala vertical
-        X_salto = [[s.velocidad_bala, s.distancia]           for s in samples]
-        X_mov   = [[s.dist_bala2_y,   s.dist_bala2_x]       for s in samples]
+        # Vectores de features separados: cada submodelo ve solo sus propias amenazas
+        X_salto = [[s.velocidad_bala, s.distancia]     for s in samples]
+        X_mov   = [[s.dist_bala2_y,   s.dist_bala2_x] for s in samples]
         y_salto = [s.salto      for s in samples]
         y_mov   = [s.movimiento for s in samples]
 
         self._reset_modelo()
 
-        # --- Modelo de SALTO ---
-        clases_s = sorted(set(y_salto))
-        if len(clases_s) < 2:
-            self.clase_unica = int(clases_s[0])
-            msg_s = "Salto: modelo trivial (SIEMPRE 1)" if self.clase_unica == 1 else "Salto: modelo trivial (SIEMPRE 0)"
-        else:
-            X_train, X_test, y_train, y_test = train_test_split(X_salto, y_salto, test_size=0.2, random_state=42, stratify=y_salto)
-            scaler_s = StandardScaler()
-            X_train_s = scaler_s.fit_transform(X_train)
-            X_test_s  = scaler_s.transform(X_test)
-            clf_s = MLPClassifier(hidden_layer_sizes=(3, 3), activation="relu", solver="adam", max_iter=300000, random_state=42)
-            clf_s.fit(X_train_s, y_train)
-            acc_s = clf_s.score(X_test_s, y_test)
-            self.modelo = clf_s
-            self.scaler = scaler_s
-            msg_s = f"Salto: accuracy ≈ {acc_s:.3f}"
+        # --- Submodelo 1: SALTO (esquiva bala horizontal) ---
+        clf_s, scl_s, cu_s, msg_s = self._entrenar_submodelo(
+            X_salto, y_salto, "Salto", balancear=False
+        )
+        self.modelo = clf_s
+        self.scaler = scl_s
+        self.clase_unica = cu_s
 
-        # --- Modelo de MOVIMIENTO horizontal ---
-        # Oversampling: cuando ambas acciones se entrenan juntas, los frames
-        # con movimiento=1 son minoría frente a movimiento=0 (frames de salto
-        # e inactivos). El MLP trivialmente predice siempre 0. Se replica
-        # la clase positiva hasta igualar la negativa para balancear.
-        n_pos_m = sum(1 for v in y_mov if v == 1)
-        n_neg_m = sum(1 for v in y_mov if v == 0)
-        if 0 < n_pos_m < n_neg_m:
-            idx_pos = [i for i, v in enumerate(y_mov) if v == 1]
-            repeticiones = (n_neg_m // n_pos_m) - 1 # Cuantas veces más por replicar
-            X_mov_bal  = list(X_mov)   + [X_mov[i]  for _ in range(repeticiones) for i in idx_pos]
-            y_mov_bal  = list(y_mov)   + [1          for _ in range(repeticiones) for _ in idx_pos]
-        else:
-            X_mov_bal, y_mov_bal = X_mov, y_mov
-
-        clases_m = sorted(set(y_mov_bal))
-        if len(clases_m) < 2:
-            self.clase_unica_movimiento = int(clases_m[0])
-            msg_m = "Movimiento: modelo trivial (SIEMPRE 1)" if self.clase_unica_movimiento == 1 else "Movimiento: modelo trivial (SIEMPRE 0)"
-        else:
-            X_train, X_test, y_train, y_test = train_test_split(X_mov_bal, y_mov_bal, test_size=0.2, random_state=42, stratify=y_mov_bal)
-            scaler_m = StandardScaler()
-            X_train_m = scaler_m.fit_transform(X_train)
-            X_test_m  = scaler_m.transform(X_test)
-            clf_m = MLPClassifier(hidden_layer_sizes=(3, 3), activation="relu", solver="adam", max_iter=300000, random_state=42)
-            clf_m.fit(X_train_m, y_train)
-            acc_m = clf_m.score(X_test_m, y_test)
-            self.modelo_movimiento = clf_m
-            self.scaler_movimiento = scaler_m
-            msg_m = f"Movimiento: accuracy ≈ {acc_m:.3f}"
+        # --- Submodelo 2: MOVIMIENTO horizontal (esquiva bala vertical) ---
+        # balancear=True porque frames con movimiento=1 son minoria frente a movimiento=0
+        clf_m, scl_m, cu_m, msg_m = self._entrenar_submodelo(
+            X_mov, y_mov, "Movimiento", balancear=True
+        )
+        self.modelo_movimiento = clf_m
+        self.scaler_movimiento = scl_m
+        self.clase_unica_movimiento = cu_m
 
         self.modelo_entrenado = True
         return True, f"MLP entrenado. {msg_s} | {msg_m}"
 
     def decision_auto_saltar(self) -> bool:
+        """Consulta el Submodelo 1 (salto) para decidir si saltar este frame."""
         if not self.modelo_entrenado:
             return False
         if (not self.bala_disparada) or (not self.en_suelo):
             return False
         distancia = abs(self.jugador.x - self.bala.x)
-
-        # Caso especial: modelo trivial de una sola clase
-        if self.clase_unica is not None and self.modelo is None:
-            proba_salto = 1.0 if self.clase_unica == 1 else 0.0
-            self.ultima_proba_salto = proba_salto
-            return self.clase_unica == 1
-
-        # Caso normal: modelo MLP con scaler (solo features de bala horizontal)
-        if self.modelo is None or self.scaler is None:
-            return False
-
         X = [[float(self.velocidad_bala), float(distancia)]]
-        Xs = self.scaler.transform(X)
-        if hasattr(self.modelo, "predict_proba"):
-            proba_salto = float(self.modelo.predict_proba(Xs)[0][1])
-            decision = proba_salto >= 0.5
-        else:
-            pred = int(self.modelo.predict(Xs)[0])
-            proba_salto = 1.0 if pred == 1 else 0.0
-            decision = pred == 1
-        self.ultima_proba_salto = proba_salto
+        proba, decision = self._predecir_proba(
+            self.modelo, self.scaler, self.clase_unica, X, umbral=0.5
+        )
+        self.ultima_proba_salto = proba
         return decision
 
     def decision_auto_mover(self) -> bool:
-        """Devuelve True si el modelo recomienda moverse a la derecha este frame."""
+        """Consulta el Submodelo 2 (movimiento) para decidir si moverse a la derecha."""
         if not self.modelo_entrenado:
             return False
         if self.moviendo_x:
             return False
-        # El movimiento esquiva la bala vertical: solo evaluar cuando bala2 está en vuelo
+        # Solo evaluar cuando bala2 esta en vuelo (es la que requiere movimiento horizontal)
         if not self.bala2_disparada:
             return False
         dist_bala2_y = float(self.jugador.y - self.bala2.y)
         dist_bala2_x = float(abs(self.jugador.x - self.bala2.x))
-
-        # Caso especial: modelo trivial de una sola clase
-        if self.clase_unica_movimiento is not None and self.modelo_movimiento is None:
-            proba_mov = 1.0 if self.clase_unica_movimiento == 1 else 0.0
-            self.ultima_proba_movimiento = proba_mov
-            return self.clase_unica_movimiento == 1
-
-        # Caso normal: modelo MLP con scaler (solo features de bala vertical)
-        if self.modelo_movimiento is None or self.scaler_movimiento is None:
-            return False
-
         X = [[dist_bala2_y, dist_bala2_x]]
-        Xs = self.scaler_movimiento.transform(X)
-        if hasattr(self.modelo_movimiento, "predict_proba"):
-            proba_mov = float(self.modelo_movimiento.predict_proba(Xs)[0][1])
-            decision = proba_mov >= 0.35  # Umbral más bajo: compensa desbalance residual de clases
-        else:
-            pred = int(self.modelo_movimiento.predict(Xs)[0])
-            proba_mov = 1.0 if pred == 1 else 0.0
-            decision = pred == 1
-        self.ultima_proba_movimiento = proba_mov
+        proba, decision = self._predecir_proba(
+            self.modelo_movimiento, self.scaler_movimiento,
+            self.clase_unica_movimiento, X,
+            umbral=0.35,  # Umbral mas sensible: compensa desbalance residual de clases
+        )
+        self.ultima_proba_movimiento = proba
         return decision
 
     # ----------------- menú -----------------
@@ -712,18 +732,22 @@ class Juego:
         self.pantalla.blit(self.nave_img, (self.nave.x, self.nave.y))
         self.pantalla.blit(self.nave2_img, (self.nave2.x, self.nave2.y))
 
-        # Bala horizontal de nave 1
+        # --- Bala horizontal (nave 1) ---
         if self.bala_disparada:
             self.bala.x += self.velocidad_bala
         if self.bala.x < -self.bullet_size[0]:
             self.reset_bala()
+            self.turno_bala = 2    # Ceder turno a bala vertical
+            self.bala2_cooldown = 20  # Pequena pausa de ~0.4s antes del siguiente disparo
         self.pantalla.blit(self.bala_img, (self.bala.x, self.bala.y))
 
-        # Bala vertical de nave 2: velocidad constante
+        # --- Bala vertical (nave 2): velocidad constante, sin gravedad ---
         if self.bala2_disparada:
             self.bala2.y += self.velocidad_bala2  # Cae a velocidad fija
-        if self.bala2.y >= self.ground_y + self.bullet_size[1]:  # Llegó al suelo
+        if self.bala2.y >= self.ground_y + self.bullet_size[1]:  # Llego al suelo
             self.reset_bala2()
+            self.turno_bala = 1    # Devolver turno a bala horizontal
+            self.bala2_cooldown = 0   # Sin cooldown extra; ya se reseteara al disparar
         self.pantalla.blit(self.bala2_img, (self.bala2.x, self.bala2.y))
 
         # --- Colisiones ---
@@ -794,17 +818,16 @@ class Juego:
             # Actualizar movimiento horizontal (independiente del salto)
             self.manejar_movimiento_horizontal()
 
-            # Cooldown para bala horizontal
-            if hasattr(self, 'bala_cooldown') and self.bala_cooldown > 0:
-                self.bala_cooldown -= 1
-            if not self.bala_disparada:
-                self.disparar_bala()
-
-            # Bala2 vertical: contar cooldown y disparar cuando esté listo
-            if self.bala2_cooldown > 0:
-                self.bala2_cooldown -= 1
-            if not self.bala2_disparada:
-                self.disparar_bala2()
+            # Sistema de turnos: las balas se alternan para no dispararse simultaneamente.
+            # Turno 1 -> bala horizontal; Turno 2 -> bala vertical.
+            if self.turno_bala == 1:
+                if not self.bala_disparada:
+                    self.disparar_bala()
+            else:
+                if self.bala2_cooldown > 0:
+                    self.bala2_cooldown -= 1
+                if not self.bala2_disparada:
+                    self.disparar_bala2()
 
             self._update_frame()
             pygame.display.flip()
