@@ -8,11 +8,11 @@ faces = sorted(
 )
 
 face_recognizer = cv.face.EigenFaceRecognizer_create()
-face_recognizer.read("Eigenface1.xml")
+face_recognizer.read("Eigenface2.xml")
 
 cap = cv.VideoCapture(0)
 cascade = cv.CascadeClassifier("haarcascade_frontalface_alt2.xml")
-THRESHOLD = 2800  # bajar = más estricto
+THRESHOLD = 6000  # bajar = más estricto
 
 while True:
     ret, frame = cap.read()

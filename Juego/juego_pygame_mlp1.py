@@ -252,6 +252,7 @@ class Juego:
         self.bala.x = self.w - self.margin
         self.bala.y = self.ground_y + int(10 * self.scale)
         self.bala_disparada = False
+        self.bala_disparada = 0 # Iniciar cooldown
         self.velocidad_bala = int(-10 * self.scale)
         self.salto = False
         self.en_suelo = True
@@ -368,7 +369,11 @@ class Juego:
 
     # ----------------- bala / salto -----------------
     def disparar_bala(self) -> None:
-        if not self.bala_disparada:
+        if not self.bala_disparada and self.bala2_cooldown <= 0:
+            # Si la bala vertical (bala2) ya va cayendo a mitad de pantalla, nos esperamos
+            if self.bala2_disparada and self.bala2.y > self.h // 3:
+                return
+
             # Aumentamos ligeramente el rango de velocidad para que el juego sea más rápido.
             self.velocidad_bala = int(random.randint(-12, -6) * self.scale)
             self.bala_disparada = True
@@ -376,10 +381,16 @@ class Juego:
     def reset_bala(self) -> None:
         self.bala.x = self.w - self.margin
         self.bala_disparada = False
+        self.bala2_cooldown = random.randint(30, 60) # Espera entre 0.6 y 1.3 seg
 
     def disparar_bala2(self) -> None:
         # Dispara la bala vertical desde la segunda nave cuando el cooldown ha terminado
         if not self.bala2_disparada and self.bala2_cooldown <= 0:
+            # Si la bala horizontal va al personaje y está a menos de 450 píxeles, nos esperamos
+            distancia_x = self.bala.x - self.jugador.x
+            if self.bala_disparada and 0 < distancia_x < 450 * self.scale:
+                return
+            
             self.velocidad_bala2 = int(random.randint(5, 8) * self.scale)
             self.bala2_disparada = True
 
@@ -783,6 +794,9 @@ class Juego:
             # Actualizar movimiento horizontal (independiente del salto)
             self.manejar_movimiento_horizontal()
 
+            # Cooldown para bala horizontal
+            if hasattr(self, 'bala_cooldown') and self.bala_cooldown > 0:
+                self.bala_cooldown -= 1
             if not self.bala_disparada:
                 self.disparar_bala()
 

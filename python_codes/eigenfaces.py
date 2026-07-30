@@ -34,5 +34,5 @@ for person in faces:
 
 face_recognizer = cv.face.EigenFaceRecognizer_create()
 face_recognizer.train(faces_data, np.array(labels))
-face_recognizer.write("Eigenface1.xml")
+face_recognizer.write("Eigenface2.xml")
 print("Modelo escrito: Eigenface.xml")

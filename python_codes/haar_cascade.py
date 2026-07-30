@@ -22,7 +22,7 @@ while True:
         img = frame[y:y+h, x:x+w] # recorte del rostro
         imgr = cv.resize(frame, (100, 100))
         count += 1
-        name = output_folder+ 'CarFer' + str(count)+'.jpg'
+        name = output_folder+ 'FaFer' + str(count)+'.jpg'
         cv.imwrite(name, img)
 
         m1 = int(h/2)

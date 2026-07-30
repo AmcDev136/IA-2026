@@ -1,8 +1,8 @@
 .vscode/
 venv/
-Caras/
 pruebas_caras/
 Eigenface1.xml
+Eigenface2.xml
 dispersion_rumores/
 codigo_coilocito/
 pdfs/
