@@ -15,7 +15,7 @@ import tensorflow as tf
 MODEL_PATH = "D:/IA Verano 2026/modelo__caras.keras"
 LABELS_PATH = "D:/IA Verano 2026/clases.json"
 IMG_SIZE = 150
-CONFIDENCE_THRESHOLD = 0.60
+CONFIDENCE_THRESHOLD = 0.80
 
 # Carga de modelo y etiquetas
 print("Cargando modelo CNN...")
@@ -45,8 +45,7 @@ def preprocess_face(face_gray_crop):
     (1, 150, 150, 1) = Se añade dimension de batch
 """
     face_resized = cv.resize(face_gray_crop, (IMG_SIZE, IMG_SIZE))
-    face_normalized = face_resized.astype("float32") / 255.0
-    face_tensor = face_normalized.reshape(1, IMG_SIZE, IMG_SIZE, 1)
+    face_tensor = face_resized.astype("float32").reshape(1, IMG_SIZE, IMG_SIZE, 1)
     return face_tensor
 
 # Inicio de la camara

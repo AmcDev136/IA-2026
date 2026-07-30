@@ -119,6 +119,7 @@ normalization_layer = layers.Rescaling(1.0 / 255)
 # Dense(num_classes) = (num_classes) + softmax = distribucion de probabilidad
 model = models.Sequential([
     layers.Input(shape=(IMG_HEIGHT, IMG_WIDTH, 1)),
+    data_augmentation,
     normalization_layer,
 
     layers.Conv2D(32, (3, 3), activation="relu"),
